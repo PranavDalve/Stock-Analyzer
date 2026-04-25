@@ -9,7 +9,7 @@ export default function LandingPage() {
   const router = useRouter()
 
   const goToDashboard = () => {
-    router.push('/dashboard')
+    router.push('/app-ui/dashboard') 
   }
 
   return (

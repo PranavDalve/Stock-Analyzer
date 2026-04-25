@@ -38,10 +38,13 @@ type BalanceSheetRow = {
   eps: number
 }
 
-function fmt(val: number) {
+function fmt(val: number | undefined | null) {
+  if (val === undefined || val === null || isNaN(val)) return "—"
+
   if (Math.abs(val) >= 1_00_00_00_000) return `₹${(val / 1_00_00_00_000).toFixed(2)}T`
   if (Math.abs(val) >= 1_00_00_000) return `₹${(val / 1_00_00_000).toFixed(2)}Cr`
   if (Math.abs(val) >= 1_00_000) return `₹${(val / 1_00_000).toFixed(2)}L`
+
   return `₹${val.toLocaleString("en-IN")}`
 }
 
@@ -77,12 +80,17 @@ const columns: ColumnDef<BalanceSheetRow>[] = [
     header: "EPS",
     cell: ({ row }) => {
       const val = row.original.eps
+    
+      if (val === undefined || val === null) {
+        return <span className="text-muted-foreground">—</span>
+      }
+    
       return (
         <span className={`tabular-nums ${val >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
           ₹{val.toFixed(2)}
         </span>
       )
-    },
+    }
   },
   {
     accessorKey: "totalAssets",

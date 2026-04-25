@@ -26,16 +26,8 @@ const data = {
   },
   navMain: [
     {
-      title: "Dashboard",
-      url: "#",
-      icon: (
-        <LayoutDashboardIcon
-        />
-      ),
-    },
-    {
       title: "Analytics",
-      url: "#",
+      url: "/",
       icon: (
         <ChartBarIcon
         />
