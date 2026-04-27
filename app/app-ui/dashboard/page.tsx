@@ -6,6 +6,7 @@ import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { StockProvider } from "@/components/stock-context"
 import { InputInline } from "@/components/search-bar"
+import { NewsFeed } from "@/components/news-feed"
 
 export default function Page() {
   return (
@@ -30,6 +31,7 @@ export default function Page() {
                   <ChartAreaInteractive />
                 </div>
                 <DataTable data={[]} />
+                <NewsFeed />
               </div>
             </div>
           </div>

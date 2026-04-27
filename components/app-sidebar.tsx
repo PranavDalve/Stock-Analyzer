@@ -26,8 +26,8 @@ const data = {
   },
   navMain: [
     {
-      title: "Analytics",
-      url: "/",
+      title: "Portfolio",
+      url: "/app-ui/portfolio",
       icon: (
         <ChartBarIcon
         />
