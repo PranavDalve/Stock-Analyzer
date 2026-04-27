@@ -30,6 +30,7 @@ import {
   LoaderIcon,
   ExternalLinkIcon,
   BarChart3Icon,
+  PlayIcon,
 } from "lucide-react"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -79,7 +80,7 @@ type StockSnapshot = {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function fmt(val: number) {
-  if (!isFinite(val)) return "—"
+  if (!isFinite(val) || val === 0) return "—"
   if (Math.abs(val) >= 1_00_00_00_000) return `₹${(val / 1_00_00_00_000).toFixed(2)}T`
   if (Math.abs(val) >= 1_00_00_000) return `₹${(val / 1_00_00_000).toFixed(2)}Cr`
   if (Math.abs(val) >= 1_00_000) return `₹${(val / 1_00_000).toFixed(2)}L`
@@ -120,7 +121,7 @@ function screenerUrl(symbol: string) {
   return `https://www.screener.in/company/${clean}/consolidated/`
 }
 
-// ─── Mini bar chart ───────────────────────────────────────────────────────────
+// ─── Score bar ────────────────────────────────────────────────────────────────
 
 function ScoreBar({ score, color }: { score: number; color: string }) {
   return (
@@ -140,23 +141,27 @@ function ScoreBar({ score, color }: { score: number; color: string }) {
 
 // ─── Compare row ──────────────────────────────────────────────────────────────
 
-type CompareRowProps = {
+function CompareRow({
+  label,
+  values,
+  rawValues,
+  higherIsBetter = true,
+}: {
   label: string
   values: (string | React.ReactNode)[]
-  highlight?: "best" | "worst" | "none"
   rawValues?: number[]
   higherIsBetter?: boolean
-}
-
-function CompareRow({ label, values, rawValues, higherIsBetter = true }: CompareRowProps) {
+}) {
   const bestIdx =
     rawValues && rawValues.length > 0
-      ? rawValues.indexOf(higherIsBetter ? Math.max(...rawValues) : Math.min(...rawValues))
+      ? rawValues.indexOf(
+          higherIsBetter ? Math.max(...rawValues) : Math.min(...rawValues)
+        )
       : -1
 
   return (
     <TableRow>
-      <TableCell className="font-medium text-muted-foreground text-sm">{label}</TableCell>
+      <TableCell className="font-medium text-muted-foreground text-sm w-44">{label}</TableCell>
       {values.map((v, i) => (
         <TableCell
           key={i}
@@ -176,8 +181,9 @@ function CompareRow({ label, values, rawValues, higherIsBetter = true }: Compare
 export default function ComparePage() {
   const [inputs, setInputs] = React.useState<string[]>(["", ""])
   const [stocks, setStocks] = React.useState<(StockSnapshot | null)[]>([null, null])
-  const [loading, setLoading] = React.useState<boolean[]>([false, false])
+  const [globalLoading, setGlobalLoading] = React.useState(false)
   const [errors, setErrors] = React.useState<(string | null)[]>([null, null])
+  const [hasCompared, setHasCompared] = React.useState(false)
 
   const MAX_STOCKS = 4
 
@@ -185,53 +191,73 @@ export default function ComparePage() {
     if (inputs.length >= MAX_STOCKS) return
     setInputs(p => [...p, ""])
     setStocks(p => [...p, null])
-    setLoading(p => [...p, false])
     setErrors(p => [...p, null])
   }
 
   function removeSlot(i: number) {
     setInputs(p => p.filter((_, idx) => idx !== i))
     setStocks(p => p.filter((_, idx) => idx !== i))
-    setLoading(p => p.filter((_, idx) => idx !== i))
     setErrors(p => p.filter((_, idx) => idx !== i))
   }
 
   function updateInput(i: number, val: string) {
     setInputs(p => p.map((v, idx) => (idx === i ? val.toUpperCase() : v)))
+    // Clear previous result for this slot when user types
+    setStocks(p => p.map((v, idx) => (idx === i ? null : v)))
+    setErrors(p => p.map((v, idx) => (idx === i ? null : v)))
   }
 
-  async function fetchStock(i: number) {
-    const sym = inputs[i]?.trim()
-    if (!sym) return
-
-    setLoading(p => p.map((v, idx) => (idx === i ? true : v)))
-    setErrors(p => p.map((v, idx) => (idx === i ? null : v)))
-    setStocks(p => p.map((v, idx) => (idx === i ? null : v)))
-
+  // Fetch a single stock and return result or null
+  async function fetchOne(sym: string, i: number): Promise<StockSnapshot | null> {
+    if (!sym.trim()) {
+      setErrors(p => p.map((v, idx) => (idx === i ? "Please enter a symbol" : v)))
+      return null
+    }
     try {
       const res = await fetch("/api/stock", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol: sym }),
+        body: JSON.stringify({ symbol: sym.trim() }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || `Error ${res.status}`)
-      setStocks(p => p.map((v, idx) => (idx === i ? (data as StockSnapshot) : v)))
+      return data as StockSnapshot
     } catch (e: unknown) {
       setErrors(p =>
         p.map((v, idx) =>
           idx === i ? (e instanceof Error ? e.message : "Failed to fetch") : v
         )
       )
-    } finally {
-      setLoading(p => p.map((v, idx) => (idx === i ? false : v)))
+      return null
     }
   }
 
-  const loaded = stocks.filter(Boolean) as StockSnapshot[]
+  // Compare all — fetch all filled slots in parallel
+  async function compareAll() {
+    const filledInputs = inputs.map(s => s.trim()).filter(Boolean)
+    if (filledInputs.length < 2) {
+      alert("Please enter at least 2 stock symbols to compare.")
+      return
+    }
+
+    setGlobalLoading(true)
+    setHasCompared(false)
+    setErrors(inputs.map(() => null))
+    setStocks(inputs.map(() => null))
+
+    // Fetch all in parallel
+    const results = await Promise.all(
+      inputs.map((sym, i) => sym.trim() ? fetchOne(sym, i) : Promise.resolve(null))
+    )
+
+    setStocks(results)
+    setGlobalLoading(false)
+    setHasCompared(true)
+  }
+
+  const loaded = stocks.filter((s): s is StockSnapshot => s !== null)
   const hasData = loaded.length >= 2
 
-  // Latest quarter financials
   function latestQ(s: StockSnapshot) {
     return s.balanceSheet?.[s.balanceSheet.length - 1] ?? null
   }
@@ -257,20 +283,23 @@ export default function ComparePage() {
               Compare Stocks
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              Add up to 4 NSE/BSE stocks to compare side-by-side
+              Add up to 4 NSE/BSE stocks and click Compare to analyse side-by-side
             </p>
           </div>
 
-          {/* Search slots */}
+          {/* Input card */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Select Stocks</CardTitle>
-              <CardDescription>Enter NSE/BSE ticker symbols e.g. RELIANCE, TCS, HDFCBANK</CardDescription>
+              <CardDescription>
+                Enter NSE/BSE ticker symbols e.g. RELIANCE, TCS, HDFCBANK — then click Compare
+              </CardDescription>
             </CardHeader>
-            <CardContent>
-              <div className="flex flex-wrap gap-3">
+            <CardContent className="flex flex-col gap-4">
+              {/* Input slots */}
+              <div className="flex flex-wrap gap-3 items-center">
                 {inputs.map((val, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                  <div key={i} className="flex flex-col gap-1">
                     <div className={`flex items-center gap-2 rounded-lg border px-3 py-2 ${BG_COLORS[i]}`}>
                       <span className={`text-xs font-bold w-5 text-center ${COLORS[i]}`}>
                         {i + 1}
@@ -278,101 +307,132 @@ export default function ComparePage() {
                       <Input
                         value={val}
                         onChange={e => updateInput(i, e.target.value)}
-                        onKeyDown={e => e.key === "Enter" && fetchStock(i)}
+                        onKeyDown={e => e.key === "Enter" && compareAll()}
                         placeholder="e.g. RELIANCE"
+                        disabled={globalLoading}
                         className="h-8 w-36 border-0 bg-transparent p-0 text-sm font-semibold focus-visible:ring-0 uppercase"
                       />
-                      {loading[i] ? (
-                        <LoaderIcon className="h-4 w-4 animate-spin text-muted-foreground" />
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                          onClick={() => fetchStock(i)}
+                      {inputs.length > 2 && !globalLoading && (
+                        <button
+                          onClick={() => removeSlot(i)}
+                          className="text-muted-foreground hover:text-foreground"
                         >
-                          Go
-                        </Button>
-                      )}
-                      {inputs.length > 2 && (
-                        <button onClick={() => removeSlot(i)} className="text-muted-foreground hover:text-foreground">
                           <XIcon className="h-3.5 w-3.5" />
                         </button>
                       )}
                     </div>
+                    {/* Per-slot status */}
                     {errors[i] && (
-                      <span className="text-xs text-red-500">{errors[i]}</span>
+                      <span className="text-xs text-red-500 px-1">{errors[i]}</span>
                     )}
-                    {stocks[i] && (
-                      <Badge variant="outline" className={`text-xs ${COLORS[i]}`}>
+                    {stocks[i] && !globalLoading && (
+                      <span className={`text-xs font-medium px-1 ${COLORS[i]}`}>
                         ✓ {stocks[i]!.symbol}
-                      </Badge>
+                      </span>
                     )}
                   </div>
                 ))}
 
-                {inputs.length < MAX_STOCKS && (
-                  <Button variant="outline" size="sm" onClick={addSlot} className="h-10 gap-1.5">
+                {inputs.length < MAX_STOCKS && !globalLoading && (
+                  <Button variant="outline" size="sm" onClick={addSlot} className="h-10 gap-1.5 self-start mt-0">
                     <PlusIcon className="h-4 w-4" />
                     Add Stock
                   </Button>
                 )}
               </div>
+
+              {/* Compare button */}
+              <div className="flex items-center gap-3">
+                <Button
+                  onClick={compareAll}
+                  disabled={globalLoading || inputs.filter(s => s.trim()).length < 2}
+                  className="gap-2"
+                >
+                  {globalLoading ? (
+                    <>
+                      <LoaderIcon className="h-4 w-4 animate-spin" />
+                      Analysing {inputs.filter(s => s.trim()).length} stocks...
+                    </>
+                  ) : (
+                    <>
+                      <PlayIcon className="h-4 w-4" />
+                      Compare Stocks
+                    </>
+                  )}
+                </Button>
+                {hasCompared && !globalLoading && (
+                  <span className="text-xs text-muted-foreground">
+                    {loaded.length} of {inputs.filter(s => s.trim()).length} stocks loaded successfully
+                  </span>
+                )}
+              </div>
             </CardContent>
           </Card>
 
-          {/* Stock header cards */}
-          {hasData && (
-            <div className={`grid gap-4 grid-cols-${loaded.length} md:grid-cols-${loaded.length}`}
-              style={{ gridTemplateColumns: `repeat(${loaded.length}, minmax(0, 1fr))` }}
-            >
-              {loaded.map((s, i) => (
-                <Card key={s.symbol} className={`border ${BG_COLORS[i]}`}>
-                  <CardContent className="pt-4 pb-3 px-4">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <p className={`text-xs font-bold uppercase tracking-widest ${COLORS[i]}`}>
-                          {s.exchange}
-                        </p>
-                        <p className="text-lg font-bold">{s.symbol}</p>
-                        <p className="text-xs text-muted-foreground truncate max-w-[160px]">{s.name}</p>
-                      </div>
-                      <a
-                        href={screenerUrl(s.symbol)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-muted-foreground hover:text-foreground transition-colors"
-                        title="View on Screener.in"
-                      >
-                        <ExternalLinkIcon className="h-4 w-4" />
-                      </a>
-                    </div>
-                    <div className="mt-3">
-                      <p className="text-2xl font-bold tabular-nums">₹{s.price.toLocaleString("en-IN")}</p>
-                      <p className={`text-sm font-medium flex items-center gap-1 ${s.change >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
-                        {s.change >= 0 ? <TrendingUpIcon className="h-3.5 w-3.5" /> : <TrendingDownIcon className="h-3.5 w-3.5" />}
-                        {s.change >= 0 ? "+" : ""}{s.change.toFixed(2)} ({s.changePercent.toFixed(2)}%)
-                      </p>
-                    </div>
-                    <div className="mt-3">
-                      <p className="text-xs text-muted-foreground mb-1">Decision Score</p>
-                      <ScoreBar score={s.decisionScore} color={COLORS[i]} />
-                      <Badge
-                        variant="outline"
-                        className={`mt-1.5 text-xs font-bold ${decisionColor(s.decision)}`}
-                      >
-                        {s.decision}
-                      </Badge>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+          {/* Global loading skeleton */}
+          {globalLoading && (
+            <div className="flex flex-col items-center justify-center py-16 gap-4 text-muted-foreground">
+              <LoaderIcon className="h-10 w-10 animate-spin opacity-40" />
+              <p className="text-sm animate-pulse">
+                Fetching data for {inputs.filter(s => s.trim()).join(", ")}...
+              </p>
             </div>
           )}
 
-          {/* Comparison tables */}
-          {hasData && (
-            <div className="grid gap-6 lg:grid-cols-1">
+          {/* Results */}
+          {!globalLoading && hasData && (
+            <>
+              {/* Stock header cards */}
+              <div
+                className="grid gap-4"
+                style={{ gridTemplateColumns: `repeat(${loaded.length}, minmax(0, 1fr))` }}
+              >
+                {loaded.map((s, i) => (
+                  <Card key={s.symbol} className={`border ${BG_COLORS[i]}`}>
+                    <CardContent className="pt-4 pb-3 px-4">
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <p className={`text-xs font-bold uppercase tracking-widest ${COLORS[i]}`}>
+                            {s.exchange}
+                          </p>
+                          <p className="text-lg font-bold">{s.symbol}</p>
+                          <p className="text-xs text-muted-foreground truncate max-w-[160px]">{s.name}</p>
+                        </div>
+                        <a
+                          href={screenerUrl(s.symbol)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          title="View on Screener.in"
+                        >
+                          <ExternalLinkIcon className="h-4 w-4" />
+                        </a>
+                      </div>
+                      <div className="mt-3">
+                        <p className="text-2xl font-bold tabular-nums">
+                          ₹{s.price.toLocaleString("en-IN")}
+                        </p>
+                        <p className={`text-sm font-medium flex items-center gap-1 ${s.change >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
+                          {s.change >= 0
+                            ? <TrendingUpIcon className="h-3.5 w-3.5" />
+                            : <TrendingDownIcon className="h-3.5 w-3.5" />}
+                          {s.change >= 0 ? "+" : ""}{s.change.toFixed(2)} ({s.changePercent.toFixed(2)}%)
+                        </p>
+                      </div>
+                      <div className="mt-3">
+                        <p className="text-xs text-muted-foreground mb-1">Decision Score</p>
+                        <ScoreBar score={s.decisionScore} color={COLORS[i]} />
+                        <Badge
+                          variant="outline"
+                          className={`mt-1.5 text-xs font-bold ${decisionColor(s.decision)}`}
+                        >
+                          {s.decision}
+                        </Badge>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
 
               {/* Price & Market */}
               <Card>
@@ -522,7 +582,7 @@ export default function ComparePage() {
                         <CompareRow
                           label="Decision Score"
                           values={loaded.map((s, i) => (
-                            <div className="flex justify-center">
+                            <div className="flex justify-center min-w-[100px]">
                               <ScoreBar score={s.decisionScore} color={COLORS[i]} />
                             </div>
                           ))}
@@ -643,15 +703,22 @@ export default function ComparePage() {
                   </div>
                 </CardContent>
               </Card>
-
-            </div>
+            </>
           )}
 
           {/* Empty state */}
-          {!hasData && !loading.some(Boolean) && (
+          {!globalLoading && !hasData && !hasCompared && (
             <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
               <BarChart3Icon className="h-12 w-12 opacity-20" />
-              <p className="text-sm">Enter at least 2 stock symbols above and press Go to compare</p>
+              <p className="text-sm">Enter at least 2 stock symbols above and click Compare</p>
+            </div>
+          )}
+
+          {/* Partial failure state */}
+          {!globalLoading && hasCompared && !hasData && (
+            <div className="flex flex-col items-center justify-center py-20 text-muted-foreground gap-3">
+              <BarChart3Icon className="h-12 w-12 opacity-20" />
+              <p className="text-sm text-red-500">Could not load enough stocks. Check the symbols and try again.</p>
             </div>
           )}
 
